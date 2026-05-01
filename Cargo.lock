@@ -192,9 +192,6 @@ dependencies = [
 [[package]]
 name = "tvm-ffi-sys"
 version = "0.1.0-alpha.0"
-dependencies = [
- "cmake",
-]
 
 [[package]]
 name = "tvm-runtime"

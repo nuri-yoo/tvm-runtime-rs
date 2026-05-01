@@ -98,12 +98,30 @@ impl Tensor {
         self.inner.device()
     }
 
-    pub fn dltensor(&self) -> &DLTensor {
-        self.inner.dltensor()
+    /// Upstream tvm-ffi removed the public `dltensor()` accessor, but we still
+    /// need a `DLTensor` for C-ABI calls like `TVMDeviceAPICopyDataFromTo`.
+    /// Compose one from the public Tensor API. The resulting value is valid
+    /// only as long as `self` is alive.
+    pub fn dltensor(&self) -> DLTensor {
+        DLTensor {
+            data: self.inner.data_ptr() as *mut c_void,
+            device: self.inner.device(),
+            ndim: self.inner.ndim() as i32,
+            dtype: self.inner.dtype(),
+            shape: self.inner.shape().as_ptr() as *mut i64,
+            strides: if self.inner.strides().is_empty() {
+                core::ptr::null_mut()
+            } else {
+                self.inner.strides().as_ptr() as *mut i64
+            },
+            byte_offset: 0,
+        }
     }
 
-    pub fn dltensor_mut(&mut self) -> &mut DLTensor {
-        self.inner.dltensor_mut()
+    pub fn dltensor_mut(&mut self) -> DLTensor {
+        // Mutability in the C ABI sense — we still return by value because
+        // the new tvm-ffi stores shape/strides through a private layout.
+        self.dltensor()
     }
 
     pub fn data_ptr(&self) -> *const core::ffi::c_void {
@@ -167,12 +185,14 @@ impl Tensor {
                 // Device to Device copy
                 self.device()
             };
+            let src_dl = src.dltensor();
+            let mut dst_dl = self.dltensor_mut();
             unsafe {
                 let handle = TVMDeviceAPIGet(device, false as i32);
                 tvm_runtime_sys::TVMDeviceAPICopyDataFromTo(
                     handle,
-                    src.dltensor(),
-                    self.dltensor_mut(),
+                    &src_dl,
+                    &mut dst_dl,
                     null_mut(),
                 );
                 tvm_runtime_sys::TVMDeviceAPIStreamSync(handle, device, null_mut());
@@ -203,6 +223,7 @@ impl Tensor {
             }
         } else {
             // Host to Device copy
+            let self_dl = self.dltensor();
             let host_dltensor = DLTensor {
                 data: src.as_ptr() as *mut c_void,
                 device: DLDevice {
@@ -210,18 +231,19 @@ impl Tensor {
                         .expect("The matching host device type should be exist"),
                     device_id: 0,
                 },
-                ndim: self.dltensor().ndim,
-                dtype: self.dltensor().dtype,
-                shape: self.dltensor().shape,
-                strides: self.dltensor().strides,
-                byte_offset: self.dltensor().byte_offset,
+                ndim: self_dl.ndim,
+                dtype: self_dl.dtype,
+                shape: self_dl.shape,
+                strides: self_dl.strides,
+                byte_offset: self_dl.byte_offset,
             };
+            let mut dst_dl = self.dltensor_mut();
             unsafe {
                 let handle = TVMDeviceAPIGet(self.device(), false as i32);
                 tvm_runtime_sys::TVMDeviceAPICopyDataFromTo(
                     handle,
                     &host_dltensor,
-                    self.dltensor_mut(),
+                    &mut dst_dl,
                     null_mut(),
                 );
                 tvm_runtime_sys::TVMDeviceAPIStreamSync(handle, self.device(), null_mut());
